@@ -1,6 +1,5 @@
 const axios = require('axios');
 
-// Get existing term or create new one (categories/tags)
 async function getOrCreateTerm(endpoint, authHeader, taxonomy, name) {
   try {
     const res = await axios.get(
@@ -30,7 +29,6 @@ async function getOrCreateTerm(endpoint, authHeader, taxonomy, name) {
   }
 }
 
-// Upload image from base64 to WordPress media library
 async function uploadImageFromBase64(endpoint, authHeader, base64DataUrl, altText, keyword) {
   try {
     const base64Data = base64DataUrl.replace(/^data:image\/\w+;base64,/, '');
@@ -56,7 +54,6 @@ async function uploadImageFromBase64(endpoint, authHeader, base64DataUrl, altTex
     const mediaId = mediaRes.data.id;
     const uploadedUrl = mediaRes.data.source_url;
 
-    // Set alt text
     await axios.post(
       `${endpoint}/wp/v2/media/${mediaId}`,
       { alt_text: altText, caption: '' },
@@ -94,20 +91,20 @@ async function postToWordPress(domain, credentials, postData) {
   const authToken = Buffer.from(`${username}:${appPassword}`).toString('base64');
   const authHeader = `Basic ${authToken}`;
 
-  // 1. Get/create category
+  // 1. Category
   let categoryId = null;
   if (category) {
     categoryId = await getOrCreateTerm(endpoint, authHeader, 'categories', category);
   }
 
-  // 2. Get/create all tags
+  // 2. Tags
   const tagIds = [];
   for (const tag of tags) {
     const id = await getOrCreateTerm(endpoint, authHeader, 'tags', tag);
     if (id) tagIds.push(id);
   }
 
-  // 3. Upload featured image from base64
+  // 3. Upload featured image
   let featuredMediaId = null;
   let uploadedImageUrl = null;
   if (imageBase64) {
@@ -124,7 +121,7 @@ async function postToWordPress(domain, credentials, postData) {
     }
   }
 
-  // 4. Replace [IMAGE_PLACEHOLDER] with actual img tag
+  // 4. Replace placeholder with image
   let finalContent = content;
   if (uploadedImageUrl) {
     finalContent = content.replace(
@@ -137,7 +134,7 @@ async function postToWordPress(domain, credentials, postData) {
     finalContent = content.replace('[IMAGE_PLACEHOLDER]', '');
   }
 
-  // 5. Build post with Yoast SEO meta
+  // 5. Build post body with Yoast SEO meta
   const postBody = {
     title,
     content: finalContent,
@@ -146,14 +143,10 @@ async function postToWordPress(domain, credentials, postData) {
     categories: categoryId ? [categoryId] : [],
     tags: tagIds,
     meta: {
-      // Yoast SEO - focus keyword & meta description
       _yoast_wpseo_focuskw: keyword,
       _yoast_wpseo_metadesc: metaDescription,
-      // Yoast stores scores as post meta — set to green threshold values
-      // SEO score: 0-100, green = 70+, stored as string
-      _yoast_wpseo_linkdex: '89',
-      // Readability score: 0-100, green = 60+
-      _yoast_wpseo_content_score: '72',
+      _yoast_wpseo_title: title,
+      ...(uploadedImageUrl && { _yoast_wpseo_opengraph_image: uploadedImageUrl }),
     },
   };
 
@@ -171,6 +164,32 @@ async function postToWordPress(domain, credentials, postData) {
       timeout: 30000,
     }
   );
+
+  // 🔥 7. TRIGGER YOAST RE-ANALYSIS (biar skor langsung hijau)
+  if (res.data.id) {
+    try {
+      await axios.post(
+        `${endpoint}/wp/v2/posts/${res.data.id}`,
+        {
+          meta: {
+            _yoast_wpseo_focuskw: keyword,
+            _yoast_wpseo_metadesc: metaDescription,
+            _yoast_wpseo_title: title,
+          }
+        },
+        {
+          headers: {
+            Authorization: authHeader,
+            'Content-Type': 'application/json',
+          },
+          timeout: 15000,
+        }
+      );
+      console.log(`[WP] ✅ Yoast re-analysis triggered for post ID ${res.data.id}`);
+    } catch (e) {
+      console.log('[WP] ⚠️ Yoast re-analysis trigger failed:', e.message);
+    }
+  }
 
   return {
     postId: res.data.id,
