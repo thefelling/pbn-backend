@@ -251,6 +251,10 @@ cron.schedule('*/5 * * * *', async () => {
 });
 
 const port = process.env.PORT || 3001;
+app.get('/', (req, res) => {
+    res.send('PBN Backend is running! 🚀');
+});
+
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Server running on port ${port}`);
+    console.log(`Server running on port ${port}`); // ← pakai backtick
 });
