@@ -2,75 +2,125 @@ const OpenAI = require('openai');
 const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const writingStyles = [
-  'conversational and friendly',
-  'professional and authoritative',
-  'casual and relatable',
-  'educational and informative',
-  'storytelling with examples',
-];
-
-const structureVariants = [
-  ['H2', 'H3', 'H3', 'H2', 'H3', 'H2'],
-  ['H2', 'H2', 'H3', 'H2', 'H3', 'H3', 'H2'],
-  ['H2', 'H3', 'H2', 'H2', 'H3', 'H2'],
+  'conversational and thought-provoking, using rhetorical questions',
+  'analytical and data-driven with specific real-world examples',
+  'narrative storytelling with a case study as the opening hook',
+  'educational and myth-busting with counterintuitive facts',
+  'psychological deep-dive with references to research and studies',
 ];
 
 function getRandomItem(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
-
 function randomWordCount() {
-  return Math.floor(Math.random() * (1500 - 800 + 1)) + 800;
+  return Math.floor(Math.random() * (1500 - 900 + 1)) + 900;
 }
 
-async function generateArticle(keyword, extraInstructions = '') {
-  const style = getRandomItem(writingStyles);
-  const structure = getRandomItem(structureVariants);
-  const wordCount = randomWordCount();
+// Strip markdown artifacts from AI output
+function stripMarkdown(text) {
+  return text
+    .replace(/```html\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .replace(/^---\s*$/gm, '')
+    .trim();
+}
 
-  const prompt = `
-Write a ${wordCount}-word SEO-optimized blog article about: "${keyword}"
+// STEP 1: Generate title, keyword, category, tags from niche
+async function generateMetaFromNiche(niche) {
+  const prompt = `You are an expert SEO content strategist. Generate a compelling article concept for this niche: "${niche}"
 
-Requirements:
-- Writing style: ${style}
-- Include the keyword naturally in: title, first paragraph, at least 2 headings, throughout the body
-- Structure: Title (H1), then use these heading levels: ${structure.join(', ')}
-- Add a meta description of 150-160 characters at the TOP before the article, labeled as "META DESCRIPTION:"
-- Include 1 outbound link naturally embedded in the text (use a real relevant URL)
-- Make it feel 100% human-written — vary sentence length, use contractions, include opinions/personal tone
-- Do NOT use phrases like "In conclusion", "To summarize", "As an AI"
-- End with a call-to-action paragraph
-- IMPORTANT: Return clean HTML formatting with proper heading tags
-${extraInstructions}
+The title MUST follow this EXACT pattern:
+"The [Specific Named Concept/Effect/Phenomenon]: [Explanatory Subtitle starting with Why/How/What]"
 
-Format your response EXACTLY like this:
-META DESCRIPTION: [your meta description here]
+Study these examples carefully and match the style:
+- "The Near-Miss Effect: Why the Human Brain Interprets Failure as Progress"
+- "The Skinner Box Legacy: How Operant Conditioning Shaped Modern Slot Mechanics"
+- "The Evolution of Risk: From Ancient Divination to Digital Odds"
+- "The Availability Heuristic: Why We Overestimate Unlikely Events"
+- "The House Edge Illusion: How Casinos Turn Mathematics Into Mythology"
+- "The Gambler's Fallacy: Why the Brain Sees Patterns in Pure Randomness"
 
-<h1>[Article Title]</h1>
-[rest of article in HTML]
-`;
+Rules:
+- [Specific Concept] = a named psychological effect, scientific principle, historical legacy, or specific real phenomenon
+- Subtitle = intellectually stimulating, reveals what the reader will learn
+- Keyword = 2-4 word focus phrase directly related to the title concept
+- Category = ONE specific category matching the niche (not "Uncategorized")
+- Tags = 5 specific descriptive tags (specific enough to be meaningful, not too broad)
+
+Respond ONLY in valid JSON, no other text:
+{
+  "title": "The [Concept]: [Subtitle]",
+  "keyword": "2-4 word focus keyword",
+  "category": "Specific Category Name",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
+}`;
 
   const completion = await client.chat.completions.create({
     model: 'gpt-4o',
     messages: [{ role: 'user', content: prompt }],
     temperature: 0.85,
+    response_format: { type: 'json_object' },
   });
 
-  return completion.choices[0].message.content;
+  return JSON.parse(completion.choices[0].message.content);
 }
 
+// STEP 2: Write full article from generated title + keyword
+async function generateArticleFromTitle(title, keyword, niche) {
+  const style = getRandomItem(writingStyles);
+  const wordCount = randomWordCount();
+
+  const prompt = `Write a ${wordCount}-word SEO-optimized blog article.
+
+Article Title: "${title}"
+Focus Keyword: "${keyword}"
+Niche: "${niche}"
+Writing Style: ${style}
+
+STRICT OUTPUT FORMAT (follow exactly, no deviations):
+
+Line 1: META DESCRIPTION: [150-160 character description containing the keyword naturally]
+
+Then the article in clean HTML:
+
+<h1>${title}</h1>
+[IMAGE_PLACEHOLDER]
+<p>[First paragraph — must contain keyword within first 100 words]</p>
+[Continue with H2, H3 headings, paragraphs — proper HTML structure]
+
+REQUIREMENTS:
+- Output ONLY the META DESCRIPTION line + clean HTML. NO markdown. NO code blocks. NO backticks.
+- Keyword must appear in: H1, first paragraph, at least 2 H2 headings, naturally throughout body
+- Keyword density: 1.0%–2.0% (natural, not stuffed)
+- Include 1 outbound link to a real authoritative source (embed naturally in text)
+- Use varied sentence lengths (mix short punchy sentences with longer analytical ones)
+- No clichés: avoid "In conclusion", "To summarize", "As an AI", "delve", "tapestry"
+- End with a thought-provoking question or actionable insight
+- Minimum 3 H2 sections, each with at least 1 H3 subsection`;
+
+  const completion = await client.chat.completions.create({
+    model: 'gpt-4o',
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.82,
+  });
+
+  return stripMarkdown(completion.choices[0].message.content);
+}
+
+// Revise article for SEO issues
 async function reviseArticle(article, keyword, feedback) {
-  const prompt = `
-Revise this article to improve SEO score. Issues to fix:
+  const prompt = `Revise this article to fix these specific SEO issues:
 ${feedback}
 
-Keyword to optimize for: "${keyword}"
+Focus keyword: "${keyword}"
+
+CRITICAL: Return the COMPLETE revised article in EXACT same format:
+- Line 1: META DESCRIPTION: [description]
+- Then clean HTML article (NO markdown, NO code blocks)
+- Do NOT truncate or summarize — return the FULL article
 
 Original article:
-${article}
-
-Return the COMPLETE revised article in the same format (META DESCRIPTION + HTML).
-`;
+${article}`;
 
   const completion = await client.chat.completions.create({
     model: 'gpt-4o',
@@ -78,7 +128,12 @@ Return the COMPLETE revised article in the same format (META DESCRIPTION + HTML)
     temperature: 0.7,
   });
 
-  return completion.choices[0].message.content;
+  return stripMarkdown(completion.choices[0].message.content);
 }
 
-module.exports = { generateArticle, reviseArticle };
+module.exports = {
+  generateMetaFromNiche,
+  generateArticleFromTitle,
+  reviseArticle,
+  stripMarkdown,
+};
