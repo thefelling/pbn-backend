@@ -12,7 +12,7 @@ const { postToWordPress } = require('./services/wordpress-api');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '20mb' })); // base64 images can be large
+app.use(express.json({ limit: '20mb' }));
 
 // =================== AUTH ===================
 app.post('/api/login', (req, res) => {
@@ -38,7 +38,7 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// =================== DOMAINS ===================
+// =================== DOMAINS (dengan Niche per Domain) ===================
 app.get('/api/domains', authMiddleware, async (req, res) => {
   const { data } = await readFile('domains.json');
   res.json(data);
@@ -46,7 +46,12 @@ app.get('/api/domains', authMiddleware, async (req, res) => {
 
 app.post('/api/domains', authMiddleware, async (req, res) => {
   const { data, sha } = await readFile('domains.json');
-  const newDomain = { id: Date.now().toString(), ...req.body, createdAt: new Date().toISOString() };
+  const newDomain = {
+    id: Date.now().toString(),
+    ...req.body,
+    niches: req.body.niches || [], // <-- INI BARU: setiap domain punya array niche sendiri
+    createdAt: new Date().toISOString()
+  };
   data.push(newDomain);
   await writeFile('domains.json', data, sha);
   res.json(newDomain);
@@ -58,20 +63,46 @@ app.delete('/api/domains/:id', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
+// ====== MANAJEMEN NICHE PER DOMAIN ======
+// Tambah niche ke domain tertentu
+app.post('/api/domains/:id/niches', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { niche } = req.body;
+  if (!niche) return res.status(400).json({ error: 'Niche is required' });
+
+  const { data, sha } = await readFile('domains.json');
+  const domain = data.find(d => d.id === id);
+  if (!domain) return res.status(404).json({ error: 'Domain not found' });
+
+  if (!domain.niches) domain.niches = [];
+  if (!domain.niches.includes(niche)) domain.niches.push(niche);
+  
+  await writeFile('domains.json', data, sha);
+  res.json(domain);
+});
+
+// Hapus niche dari domain tertentu
+app.delete('/api/domains/:id/niches/:niche', authMiddleware, async (req, res) => {
+  const { id, niche } = req.params;
+  const { data, sha } = await readFile('domains.json');
+  const domain = data.find(d => d.id === id);
+  if (!domain) return res.status(404).json({ error: 'Domain not found' });
+
+  domain.niches = (domain.niches || []).filter(n => n !== niche);
+  await writeFile('domains.json', data, sha);
+  res.json(domain);
+});
+
 // =================== CONTENT GENERATION ===================
 app.post('/api/generate', authMiddleware, async (req, res) => {
   const { niche, generateImageFlag = true } = req.body;
   if (!niche) return res.status(400).json({ error: 'niche is required' });
 
   try {
-    // Step 1: Generate meta from niche
     const meta = await generateMetaFromNiche(niche);
     const { title, keyword, category, tags } = meta;
 
-    // Step 2: Write article
     let raw = await generateArticleFromTitle(title, keyword, niche);
-
-    // Parse meta description
     let metaDesc = '';
     const metaMatch = raw.match(/META DESCRIPTION:\s*(.*?)(?:\n|$)/);
     if (metaMatch) {
@@ -80,7 +111,6 @@ app.post('/api/generate', authMiddleware, async (req, res) => {
     }
     let articleHTML = raw;
 
-    // Step 3: SEO loop (max 3 attempts)
     let seoResult = checkSEO(articleHTML, keyword, metaDesc);
     let attempts = 0;
     while (seoResult.score < 80 && attempts < 3) {
@@ -101,7 +131,6 @@ app.post('/api/generate', authMiddleware, async (req, res) => {
       attempts++;
     }
 
-    // Step 4: Generate image (downloads buffer immediately, returns base64)
     let imageData = null;
     if (generateImageFlag) {
       try {
@@ -159,7 +188,6 @@ app.post('/api/post', authMiddleware, async (req, res) => {
       }
     );
 
-    // Log post
     const { data: posts, sha } = await readFile('posts.json');
     posts.push({
       id: Date.now().toString(),
@@ -205,6 +233,66 @@ app.get('/api/schedules', authMiddleware, async (req, res) => {
   res.json(data);
 });
 
+// =================== AUTO SCHEDULE (setiap hari jam 00:00 UTC) ===================
+cron.schedule('0 0 * * *', async () => {
+  console.log('[AutoSchedule] Running daily schedule creation...');
+  try {
+    const { data: domains } = await readFile('domains.json');
+    // Filter domain yang punya minimal 1 niche
+    const eligibleDomains = domains.filter(d => d.niches && d.niches.length > 0);
+    if (eligibleDomains.length === 0) {
+      console.log('[AutoSchedule] No domains with niches defined. Skipping.');
+      return;
+    }
+
+    // Cek apakah sudah ada jadwal untuk hari ini
+    const { data: schedules, sha } = await readFile('schedules.json');
+    const today = new Date().toDateString();
+    const todaySchedules = schedules.filter(
+      (s) => new Date(s.scheduledAt).toDateString() === today
+    );
+    if (todaySchedules.length >= 2) {
+      console.log('[AutoSchedule] Already have 2 schedules for today.');
+      return;
+    }
+
+    // Pilih 1 domain secara acak (yang punya niche)
+    const randomDomain = eligibleDomains[Math.floor(Math.random() * eligibleDomains.length)];
+    // Pilih 1 niche secara acak dari domain tersebut
+    const randomNiche = randomDomain.niches[Math.floor(Math.random() * randomDomain.niches.length)];
+
+    // Buat 2 waktu: jam 08:00 dan 20:00 (dengan offset random ±30 menit)
+    const now = new Date();
+    const times = [];
+    for (let hour of [8, 20]) {
+      const t = new Date(now);
+      t.setHours(hour, 0, 0, 0);
+      const offsetMinutes = Math.floor(Math.random() * 61) - 30; // -30..+30
+      t.setMinutes(t.getMinutes() + offsetMinutes);
+      times.push(t);
+    }
+    times.sort((a, b) => a - b);
+
+    for (const scheduledTime of times) {
+      const job = {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 4),
+        domainId: randomDomain.id,
+        niche: randomNiche,
+        scheduledAt: scheduledTime.toISOString(),
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      };
+      schedules.push(job);
+      console.log(`[AutoSchedule] Created job for ${scheduledTime.toISOString()} (Domain: ${randomDomain.url}, Niche: ${randomNiche})`);
+    }
+
+    await writeFile('schedules.json', schedules, sha);
+    console.log('[AutoSchedule] Done.');
+  } catch (err) {
+    console.error('[AutoSchedule] Error:', err.message);
+  }
+});
+
 // =================== CRON (every 5 min) ===================
 cron.schedule('*/5 * * * *', async () => {
   console.log('[Cron] Checking schedules...');
@@ -230,7 +318,7 @@ cron.schedule('*/5 * * * *', async () => {
     await new Promise((r) => setTimeout(r, delay));
 
     try {
-      // Generate from niche
+      // Generate from niche (yang sudah ditentukan di job)
       const meta = await generateMetaFromNiche(job.niche);
       const { title, keyword, category, tags } = meta;
       let raw = await generateArticleFromTitle(title, keyword, job.niche);
@@ -247,20 +335,33 @@ cron.schedule('*/5 * * * *', async () => {
         if (m2) { metaDesc = m2[1].trim(); raw = revised.replace(/META DESCRIPTION:.*?(\n|$)/, '').trim(); }
       }
 
-      // Generate image
+      // Generate image (fallback jika gagal)
       let imageData = null;
-      try { imageData = await generateImage(keyword); } catch (e) { console.log('Cron image fail:', e.message); }
+      try {
+        imageData = await generateImage(keyword);
+      } catch (e) {
+        console.log('Cron image fail:', e.message);
+      }
 
       await postToWordPress(
         domain.url,
         { username: domain.username, appPassword: domain.appPassword, endpoint: domain.endpoint },
-        { title, content: raw, metaDescription: metaDesc, keyword, category, tags, imageBase64: imageData?.base64, imageAlt: imageData?.altText }
+        {
+          title,
+          content: raw,
+          metaDescription: metaDesc,
+          keyword,
+          category,
+          tags,
+          imageBase64: imageData?.base64,
+          imageAlt: imageData?.altText,
+        }
       );
 
       job.status = 'completed';
       job.completedAt = new Date().toISOString();
       job.generatedTitle = title;
-      console.log(`[Cron] Posted: ${title}`);
+      console.log(`[Cron] Posted to ${domain.url}: ${title}`);
     } catch (err) {
       job.status = 'failed';
       job.error = err.message;
@@ -275,6 +376,13 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
-app.listen(process.env.PORT || 3001, () => {
-  console.log(`Server on port ${process.env.PORT || 3001}`);
+// =================== HEALTH ===================
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// =================== START ===================
+const port = process.env.PORT || 3001;
+app.listen(port, '0.0.0.0', () => {
+  console.log(`✅ Server running on port ${port}`);
 });
