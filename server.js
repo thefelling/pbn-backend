@@ -375,7 +375,9 @@ cron.schedule('*/5 * * * *', async () => {
       if (new Date(job.scheduledAt) > now) continue;
 
       const domain = domains.find(d => d.id === job.domainId);
-      if (!domain) { job.status = 'failed'; job.error = 'Domain not found'; changed = true; continue; }
+      if (!domain) {
+        job.status = 'failed'; job.error = 'Domain not found'; changed = true; continue;
+      }
 
       // Random anti-footprint delay 0–90s
       await new Promise(r => setTimeout(r, Math.floor(Math.random() * 90000)));
@@ -397,12 +399,35 @@ cron.schedule('*/5 * * * *', async () => {
         });
         await writeFile('posts.json', posts, psha);
 
-        job.status       = 'completed';
-        job.completedAt  = new Date().toISOString();
+        job.status = 'completed';
+        job.completedAt = new Date().toISOString();
         job.generatedTitle = result.title;
-        job.yoastStatus  = result.yoastStatus;
-        job.postUrl      = result.postUrl;
+        job.yoastStatus = result.yoastStatus;
+        job.postUrl = result.postUrl;
         console.log(`[Cron] ✅ "${result.title}" | Yoast: ${result.yoastStatus}`);
+
+        // ── AUTO-RECURRING: jadwalkan job berikutnya ──────────────────────────
+        if (job.recurring) {
+          const minH = job.minIntervalHours || 12;
+          const maxH = job.maxIntervalHours || 24;
+          // Random interval antara minH dan maxH jam
+          const intervalMs = (minH + Math.random() * (maxH - minH)) * 3600000;
+          const nextTime = new Date(Date.now() + intervalMs);
+          const nextJob = {
+            id: (Date.now() + 1).toString(),
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            niche: job.niche || job.keyword,
+            domainId: job.domainId,
+            scheduledAt: nextTime.toISOString(),
+            recurring: true,
+            minIntervalHours: minH,
+            maxIntervalHours: maxH,
+          };
+          schedules.push(nextJob);
+          console.log(`[Cron] 🔄 Next recurring in +${(intervalMs/3600000).toFixed(1)}h → ${nextTime.toLocaleString()}`);
+        }
+
       } catch (e) {
         job.status = 'failed'; job.error = e.message;
         console.log('[Cron] ❌', e.message);
