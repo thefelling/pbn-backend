@@ -172,6 +172,51 @@ app.delete('/api/domains/:id', authMW, async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── DOMAIN NICHES ───────────────────────────────────────────────────────────
+
+// GET /api/domains/:id  (get single domain)
+app.get('/api/domains/:id', authMW, async (req, res) => {
+  const { data } = await readFile('domains.json');
+  const domain = data.find(d => d.id === req.params.id);
+  if (!domain) return res.status(404).json({ error: 'Domain not found' });
+  res.json(domain);
+});
+
+// PATCH /api/domains/:id  (update domain fields, including niches array)
+app.patch('/api/domains/:id', authMW, async (req, res) => {
+  const { data, sha } = await readFile('domains.json');
+  const idx = data.findIndex(d => d.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Domain not found' });
+  data[idx] = { ...data[idx], ...req.body };
+  await writeFile('domains.json', data, sha);
+  res.json(data[idx]);
+});
+
+// POST /api/domains/:id/niches  (add one niche to domain)
+app.post('/api/domains/:id/niches', authMW, async (req, res) => {
+  const { niche } = req.body;
+  if (!niche || !niche.trim()) return res.status(400).json({ error: 'niche is required' });
+  const { data, sha } = await readFile('domains.json');
+  const domain = data.find(d => d.id === req.params.id);
+  if (!domain) return res.status(404).json({ error: 'Domain not found' });
+  if (!Array.isArray(domain.niches)) domain.niches = [];
+  const clean = niche.trim();
+  if (!domain.niches.includes(clean)) domain.niches.push(clean);
+  await writeFile('domains.json', data, sha);
+  res.json(domain);
+});
+
+// DELETE /api/domains/:id/niches  (remove one niche from domain)
+app.delete('/api/domains/:id/niches', authMW, async (req, res) => {
+  const { niche } = req.body;
+  const { data, sha } = await readFile('domains.json');
+  const domain = data.find(d => d.id === req.params.id);
+  if (!domain) return res.status(404).json({ error: 'Domain not found' });
+  domain.niches = (domain.niches || []).filter(n => n !== niche);
+  await writeFile('domains.json', data, sha);
+  res.json(domain);
+});
+
 // ─── GENERATE PREVIEW (no post) ───────────────────────────────────────────────
 app.post('/api/generate', authMW, async (req, res) => {
   const { niche, generateImageFlag = true } = req.body;
